@@ -236,9 +236,13 @@ export default function Prediction() {
 
   const [result, setResult] = useState(null);
 
+  const [aiAdvice, setAiAdvice] = useState(null);
+
   const [loadingWeather, setLoadingWeather] = useState(false);
 
   const [loadingPrediction, setLoadingPrediction] = useState(false);
+
+  const [loadingAI, setLoadingAI] = useState(false);
 
   const [error, setError] = useState("");
 
@@ -258,10 +262,15 @@ export default function Prediction() {
       setForm((previous) => ({
         ...previous,
         state: value,
-        district: newDistricts.length > 0 ? newDistricts[0] : ""
+        district:
+          newDistricts.length > 0
+            ? newDistricts[0]
+            : ""
       }));
 
       setWeather(null);
+      setResult(null);
+      setAiAdvice(null);
     }
 
     if (
@@ -269,11 +278,17 @@ export default function Prediction() {
       name === "date"
     ) {
       setWeather(null);
+      setResult(null);
+      setAiAdvice(null);
     }
   };
 
   const fetchWeather = async () => {
-    if (!form.state || !form.district || !form.date) {
+    if (
+      !form.state ||
+      !form.district ||
+      !form.date
+    ) {
       return;
     }
 
@@ -281,6 +296,7 @@ export default function Prediction() {
     setError("");
     setWeather(null);
     setResult(null);
+    setAiAdvice(null);
 
     try {
       const response = await api.get("/weather", {
@@ -325,10 +341,13 @@ export default function Prediction() {
     }
 
     setLoadingPrediction(true);
+    setLoadingAI(false);
     setError("");
     setResult(null);
+    setAiAdvice(null);
 
     try {
+      // STEP 1: Existing ML prediction
       const response = await api.post(
         "/predictions",
         {
@@ -357,18 +376,64 @@ export default function Prediction() {
         }
       );
 
-      setResult(response.data.prediction);
+      const prediction =
+        response.data.prediction;
+
+      setResult(prediction);
+
+      // STEP 2: Send prediction to Gemini AI
+      setLoadingPrediction(false);
+      setLoadingAI(true);
+
+      const aiResponse = await api.post(
+        "/ai/advice",
+        {
+          state: form.state,
+          district: form.district,
+          crop: form.crop,
+          soilType: form.soilType,
+          irrigationType:
+            form.irrigationType,
+
+          temperature:
+            Number(weather.temperature_max),
+
+          rainfall:
+            Number(weather.rainfall_total),
+
+          humidity:
+            Number(weather.humidity_avg),
+
+          heatwaveProbability:
+            Number(
+              prediction.heatwaveProbability
+            ),
+
+          yieldLossRisk:
+            Number(
+              prediction.yieldLossRisk
+            ),
+
+          riskLevel:
+            prediction.riskLevel
+        }
+      );
+
+      setAiAdvice(
+        aiResponse.data.advice
+      );
 
     } catch (err) {
       console.error(err);
 
       setError(
         err.response?.data?.message ||
-        "Prediction failed. Check that the server and ML service are running."
+        "Prediction or AI recommendation failed."
       );
 
     } finally {
       setLoadingPrediction(false);
+      setLoadingAI(false);
     }
   };
 
@@ -394,6 +459,7 @@ export default function Prediction() {
       </div>
 
       {/* INDIA WEATHER MAP */}
+
       <IndiaWeatherMap
         selectedState={form.state}
         weatherData={{}}
@@ -437,7 +503,9 @@ export default function Prediction() {
             value={form.district}
             onChange={update}
             required
-            disabled={districts.length === 0}
+            disabled={
+              districts.length === 0
+            }
           >
 
             {districts.length > 0 ? (
@@ -641,12 +709,14 @@ export default function Prediction() {
               </div>
             )}
 
-            {!loadingWeather && !weather && !error && (
-              <p className="muted">
-                Select a location and date
-                to load weather.
-              </p>
-            )}
+            {!loadingWeather &&
+              !weather &&
+              !error && (
+                <p className="muted">
+                  Select a location and date
+                  to load weather.
+                </p>
+              )}
 
           </div>
 
@@ -661,6 +731,7 @@ export default function Prediction() {
             className="primary-button"
             disabled={
               loadingPrediction ||
+              loadingAI ||
               loadingWeather ||
               !weather
             }
@@ -668,6 +739,8 @@ export default function Prediction() {
 
             {loadingPrediction
               ? "Predicting..."
+              : loadingAI
+              ? "AI is analyzing..."
               : loadingWeather
               ? "Getting Weather..."
               : "Predict Risk"}
@@ -688,9 +761,68 @@ export default function Prediction() {
       </form>
 
 
-      {/* RESULT */}
+      {/* EXISTING ML RESULT */}
 
-      <PredictionResult result={result} />
+      <PredictionResult
+        result={result}
+      />
+
+
+      {/* AI AGRICULTURE ADVISOR */}
+
+      {result && (
+        <div
+          className="card full-width"
+          style={{
+            marginTop: "24px"
+          }}
+        >
+
+          <h2>
+            🤖 AI Agriculture Advisor
+          </h2>
+
+          {loadingAI && (
+            <p className="muted">
+              AI is analyzing your crop
+              conditions and generating
+              personalized suggestions...
+            </p>
+          )}
+
+          {!loadingAI && aiAdvice && (
+            <div>
+
+              <h3>
+                {aiAdvice.summary}
+              </h3>
+
+              <h4>
+                Recommended Actions
+              </h4>
+
+              <ul>
+                {aiAdvice.actions?.map(
+                  (action, index) => (
+                    <li key={index}>
+                      {action}
+                    </li>
+                  )
+                )}
+              </ul>
+
+              <p>
+                <strong>
+                  Priority:
+                </strong>{" "}
+                {aiAdvice.priority}
+              </p>
+
+            </div>
+          )}
+
+        </div>
+      )}
 
     </div>
   );
