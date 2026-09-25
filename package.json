@@ -1,6 +1,16 @@
 {
+  "homepage": "https://sanapala-krishnakanth.github.io/Agri-heat",
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d build"
+  },
   "dependencies": {
     "leaflet": "^1.9.4",
     "react-leaflet": "^5.0.0"
+  },
+  "devDependencies": {
+    "gh-pages": "^6.0.0"
   }
 }
