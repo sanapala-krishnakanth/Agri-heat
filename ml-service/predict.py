@@ -1,3 +1,4 @@
+
 from pathlib import Path
 
 import joblib
@@ -6,11 +7,7 @@ import numpy as np
 
 BASE = Path(__file__).resolve().parent
 
-MODEL_PATH = (
-    BASE
-    / "models"
-    / "yield_risk_ensemble.joblib"
-)
+MODEL_PATH = BASE / "models" / "yield_risk_ensemble.joblib"
 
 
 def _fallback(data):
@@ -18,9 +15,9 @@ def _fallback(data):
         0,
         min(
             100,
-            (data["temperature"] - 30) * 8
-            + max(0, 60 - data["humidity"]) * 0.35
-            - min(data["rainfall"], 100) * 0.08,
+            (float(data["temperature"]) - 30) * 8
+            + max(0, 60 - float(data["humidity"])) * 0.35
+            - min(float(data["rainfall"]), 100) * 0.08,
         ),
     )
 
@@ -29,20 +26,18 @@ def _fallback(data):
         min(
             100,
             heatwave * 0.75
-            + (12 if data["previousYield"] < 2 else 0)
+            + (12 if float(data["previousYield"]) < 2 else 0)
             - (
                 8
-                if data["irrigationType"].lower() == "irrigated"
+                if str(data["irrigationType"]).lower() == "irrigated"
                 else 0
             ),
         ),
     )
 
     level = (
-        "HIGH"
-        if yield_loss >= 60
-        else "MEDIUM"
-        if yield_loss >= 30
+        "HIGH" if yield_loss >= 60
+        else "MEDIUM" if yield_loss >= 30
         else "LOW"
     )
 
@@ -64,91 +59,90 @@ def _fallback(data):
 
 def predict(data):
     """
-    Predict agricultural yield-loss risk using the
-    Random Forest + Gradient Boosting ensemble.
+    Predict yield-loss risk using Random Forest,
+    Gradient Boosting, and a Neural Network (MLP).
     """
 
-    # ---------------------------------------------------------
-    # LOAD TRAINED ENSEMBLE
-    # ---------------------------------------------------------
-    if MODEL_PATH.exists():
+    if not MODEL_PATH.exists():
+        return _fallback(data)
 
+    try:
         package = joblib.load(MODEL_PATH)
 
-        rf_model = package["rf_model"]
-        gb_model = package["gb_model"]
+        # Prepare features in the same order used during training.
+        features = package.get(
+            "features",
+            ["temperature", "rainfall", "humidity", "previousYield"],
+        )
 
-        rf_weight = package["rf_weight"]
-        gb_weight = package["gb_weight"]
-
-        # -----------------------------------------------------
-        # PREPARE INPUT FEATURES
-        # -----------------------------------------------------
         X = np.array(
-            [[
-                float(data["temperature"]),
-                float(data["rainfall"]),
-                float(data["humidity"]),
-                float(data["previousYield"]),
-            ]]
+            [[float(data[feature]) for feature in features]],
+            dtype=float,
         )
 
-        # -----------------------------------------------------
-        # RANDOM FOREST PREDICTION
-        # -----------------------------------------------------
+        # Random Forest prediction
         rf_prediction = float(
-            rf_model.predict(X)[0]
+            package["rf_model"].predict(X)[0]
         )
 
-        # -----------------------------------------------------
-        # GRADIENT BOOSTING PREDICTION
-        # -----------------------------------------------------
+        # Gradient Boosting prediction
         gb_prediction = float(
-            gb_model.predict(X)[0]
+            package["gb_model"].predict(X)[0]
         )
 
-        # -----------------------------------------------------
-        # ENSEMBLE PREDICTION
-        # -----------------------------------------------------
-        prediction = (
-            rf_weight * rf_prediction
-            + gb_weight * gb_prediction
-        )
+        # Neural Network prediction
+        nn_model = package.get("nn_model")
 
-        yield_loss = max(
-            0,
-            min(100, prediction)
-        )
+        if nn_model is not None:
+            nn_prediction = float(nn_model.predict(X)[0])
+        else:
+            # Backward compatibility with an older two-model package.
+            nn_prediction = None
 
-        # -----------------------------------------------------
-        # HEATWAVE ESTIMATION
-        # -----------------------------------------------------
-        heatwave = max(
-            0,
-            min(
-                100,
-                (float(data["temperature"]) - 30) * 10
+        # Load the trained ensemble weights.
+        rf_weight = float(package.get("rf_weight", 0.5))
+        gb_weight = float(package.get("gb_weight", 0.5))
+
+        if nn_prediction is not None:
+            nn_weight = float(package.get("nn_weight", 1 / 3))
+
+            prediction = (
+                rf_weight * rf_prediction
+                + gb_weight * gb_prediction
+                + nn_weight * nn_prediction
             )
+
+            model_name = "RF+GB+NN-Ensemble"
+
+        else:
+            prediction = (
+                rf_weight * rf_prediction
+                + gb_weight * gb_prediction
+            )
+
+            model_name = "RF+GB-Ensemble"
+
+        # Keep the risk in the expected 0–100 range.
+        yield_loss = max(0.0, min(100.0, prediction))
+
+        # Existing temperature-based heatwave estimate.
+        temperature = float(data["temperature"])
+        heatwave = max(
+            0.0,
+            min(100.0, (temperature - 30) * 10),
         )
 
-        # -----------------------------------------------------
-        # RISK LEVEL
-        # -----------------------------------------------------
+        # Classify yield-loss risk.
         level = (
-            "HIGH"
-            if yield_loss >= 60
-            else "MEDIUM"
-            if yield_loss >= 30
+            "HIGH" if yield_loss >= 60
+            else "MEDIUM" if yield_loss >= 30
             else "LOW"
         )
 
-        # -----------------------------------------------------
-        # RECOMMENDATION
-        # -----------------------------------------------------
         recommendation = (
-            "Increase irrigation and apply heat-protection measures."
+            "Increase irrigation and apply appropriate heat-protection measures."
             if level == "HIGH"
-            else "Monitor weather and maintain adequate irrigation."
+            else "Monitor weather conditions and maintain adequate irrigation."
             if level == "MEDIUM"
             else "Continue normal crop monitoring."
         )
@@ -158,10 +152,10 @@ def predict(data):
             "yieldLossRisk": round(yield_loss),
             "riskLevel": level,
             "recommendation": recommendation,
-            "model": "RF+GB-Ensemble",
+            "model": model_name,
         }
 
-    # ---------------------------------------------------------
-    # FALLBACK
-    # ---------------------------------------------------------
-    return _fallback(data)
+    except (KeyError, TypeError, ValueError, OSError) as error:
+        # Do not silently hide unexpected model or prediction problems.
+        print(f"Ensemble prediction failed: {error}")
+        return _fallback(data)
